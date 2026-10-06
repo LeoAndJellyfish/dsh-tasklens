@@ -1,0 +1,9 @@
+node_modules/
+.references/
+.local/
+coverage/
+*.log
+*.tgz
+test-results/
+.playwright-cli/
+output/
