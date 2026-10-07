@@ -11,10 +11,14 @@ export interface Preferences {
   maxCallsPerHour: number;
   detail: Detail;
   model: { provider: string; model: string } | null;
+  audience: 'overview' | 'technical';
+  inputBudget: number;
+  maxTokensPerHour: number;
 }
 export const DEFAULTS: Preferences = {
   enabled: true, intervalSeconds: 90, minGapSeconds: 30,
   maxCallsPerHour: 40, detail: 'standard', model: null,
+  audience: 'overview', inputBudget: 8000, maxTokensPerHour: 400000,
 };
 export interface Evidence { seq: number; type: string; time: number; text: string }
 export interface Finding {
@@ -64,6 +68,7 @@ export interface LiveActivity {
   throughSeq: number;
 }
 export interface SessionView {
+  roadmapUnchanged?: boolean;
   sessionId: string;
   preferences: Preferences;
   paused: boolean;
@@ -76,10 +81,15 @@ export interface SessionView {
   callsThisHour: number;
   callsTotal: number;
   tokensTotal: number;
+  roadmap: import('./schema.js').Roadmap | null;
+  timeline: import('./schema.js').TimelineEntry[];
+  coverage: import('./schema.js').Coverage;
+  budget: import('./schema.js').BudgetInfo;
+  commitVersion: number;
 }
 export const STATUS_LABELS: Record<RunStatus, string> = {
   idle: '等待任务', running: '正在推进', waiting: '等待您的操作',
-  review: '本轮结束，待核验', blocked: '遇到阻碍', stopped: '任务已中断',
+  review: '本轮回复已结束', blocked: '本轮执行遇到问题', stopped: '会话执行已中断',
 };
 export const EMPTY_ACTIVITY: LiveActivity = {
   status: 'idle', label: '等待会话产生新的任务记录', lastEventAt: null,
@@ -105,5 +115,7 @@ export function preferencesOf(value: unknown, base = DEFAULTS): Preferences {
     maxCallsPerHour: number('maxCallsPerHour', 6, 120),
     detail: v.detail === 'brief' || v.detail === 'standard' || v.detail === 'detailed' ? v.detail : base.detail,
     model,
+    audience: v.audience === 'technical' || v.audience === 'overview' ? v.audience : base.audience,
+    inputBudget: number('inputBudget', 8000, 32000), maxTokensPerHour: number('maxTokensPerHour', 10000, 2000000),
   };
 }

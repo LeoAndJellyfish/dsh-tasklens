@@ -1,5 +1,6 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 import { CHANNEL, type ModelRoute, type Preferences, type SessionView } from '../shared.js';
+import type { Roadmap, TimelineEntry, SourceRef, PublicSource } from '../schema.js';
 
 export interface ClientState { view: SessionView | null; error: string | null; loading: boolean }
 interface Entry { state: ClientState; listeners: Set<() => void>; inFlight: boolean; refs: number; controller: AbortController | null }
@@ -35,8 +36,11 @@ export class TaskLensClient {
     const e = this.entry(id); if (e.inFlight || this.disposed) return;
     e.inFlight = true; const controller = new AbortController(); e.controller = controller;
     try {
-      const view = await this.call<SessionView>('view', { sessionId: id }, controller.signal);
-      if (!controller.signal.aborted && !this.disposed) this.publish(e, { view, error: null, loading: false });
+      const previous = e.state.view;
+      const view = await this.call<SessionView>('view', { sessionId: id, knownCommit: previous?.commitVersion, knownObservedSeq: previous?.coverage.observedSeq }, controller.signal);
+      if (e.state.view && view.commitVersion < e.state.view.commitVersion) return;
+      const merged = view.roadmapUnchanged && e.state.view ? { ...view, roadmap: e.state.view.roadmap, timeline: e.state.view.timeline, checkpoints: e.state.view.checkpoints } : view;
+      if (!controller.signal.aborted && !this.disposed) this.publish(e, { view: merged, error: null, loading: false });
     } catch (error) {
       if (!controller.signal.aborted && !this.disposed) this.publish(e, { ...e.state, loading: false, error: error instanceof Error ? error.message : '会话连接失败。' });
     } finally { e.inFlight = false; if (e.controller === controller) e.controller = null; }
@@ -48,6 +52,15 @@ export class TaskLensClient {
   async pause(id: string, paused: boolean): Promise<void> {
     const view = await this.call<SessionView>('pause', { sessionId: id, paused });
     this.publish(this.entry(id), { view, error: null, loading: false });
+  }
+  async backfill(id: string, paused: boolean): Promise<void> {
+    const view = await this.call<SessionView>('backfill', { sessionId: id, paused });
+    this.publish(this.entry(id), { view, error: null, loading: false });
+  }
+  history(id: string, entryId: string): Promise<{ roadmap: Roadmap; entry: TimelineEntry }> { return this.call('history', { sessionId: id, entryId }); }
+  sources(id: string, refs: SourceRef[]): Promise<Array<{ source: PublicSource | null; ref: SourceRef; validity: 'current' | 'revised' | 'missing' }>> { return this.call('sources', { sessionId: id, refs }); }
+  async annotate(id: string, annotation: unknown): Promise<void> {
+    const view = await this.call<SessionView>('annotate', { sessionId: id, annotation }); this.publish(this.entry(id), { view, error: null, loading: false });
   }
   models(): Promise<ModelRoute[]> { return this.call('models', { force: true }); }
   async preferences(preferences: Preferences): Promise<void> {

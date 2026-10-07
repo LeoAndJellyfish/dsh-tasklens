@@ -13,11 +13,14 @@ import { taskLensRoute } from './rpc.js';
 export const name = 'tasklens';
 export const inject = ['llm', 'sessions', 'sessionQuery', 'connection', 'webServer'];
 export const Config = Schema.object({
-  enabled: Schema.boolean().default(true).description('自动解释新任务'),
+  enabled: Schema.boolean().default(true).description('允许已主动开启的对话自动解释；新对话默认暂停'),
   intervalSeconds: Schema.number().min(45).max(600).default(90).description('定时解释间隔（秒）'),
   minGapSeconds: Schema.number().min(15).max(120).default(30).description('自动调用最短间隔（秒）'),
-  maxCallsPerHour: Schema.number().min(6).max(120).default(40).description('全部会话每小时自动解释上限'),
+  maxCallsPerHour: Schema.number().min(6).max(120).default(40).description('全部会话每小时调用上限，含手动生成与回溯'),
   detail: Schema.union(['brief', 'standard', 'detailed']).default('standard').description('解释详略'),
+  audience: Schema.union(['overview', 'technical']).default('overview').description('阅读层级'),
+  inputBudget: Schema.number().min(8000).max(32000).default(8000).description('单次估算输入 token 上限'),
+  maxTokensPerHour: Schema.number().min(10000).max(2000000).default(400000).description('全部会话每小时 token 预算'),
 });
 function sessionId(payload: unknown): string {
   const id = payload && typeof payload === 'object' ? (payload as Record<string, unknown>).sessionId : undefined;
@@ -39,11 +42,20 @@ export async function apply(ctx: Context, config: unknown = {}): Promise<void> {
       let value: unknown;
       const p = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
       switch (endpoint) {
-        case 'view': value = await runtime.view(sessionId(payload)); break;
+        case 'view': {
+          const view = await runtime.view(sessionId(payload));
+          value = p.knownCommit === view.commitVersion && p.knownObservedSeq === view.coverage.observedSeq
+            ? { ...view, roadmap: null, timeline: [], checkpoints: [], roadmapUnchanged: true } : view;
+          break;
+        }
         case 'models': value = await runtime.models(p.force === true); break;
         case 'refresh': value = await runtime.requestRefresh(sessionId(payload)); break;
         case 'preferences': value = await runtime.configure(p.preferences); break;
         case 'pause': value = await runtime.pause(sessionId(payload), p.paused === true); break;
+        case 'backfill': value = await runtime.pause(sessionId(payload), p.paused === true, true); break;
+        case 'history': value = await runtime.historical(sessionId(payload), String(p.entryId)); break;
+        case 'sources': value = await runtime.sources(sessionId(payload), p.refs); break;
+        case 'annotate': value = await runtime.annotate(sessionId(payload), p.annotation); break;
         default: throw new Error('未找到任务透镜接口。');
       }
       return { ok: true, value };

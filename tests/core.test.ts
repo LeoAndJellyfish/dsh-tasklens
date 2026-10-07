@@ -52,9 +52,9 @@ test('模型来源引用经过验证，助手陈述保留待核验', () => {
   assert.equal(parsed.status, 'running'); assert.deepEqual(parsed.completed[0].evidence, [2]);
   assert.equal(parsed.completed[0].basis, 'reported'); assert.equal(parsed.acceptance[0].state, 'pending');
 });
-test('有工具结果的验收可记录来源，无来源完成阶段降为待推进', () => {
+test('旧格式的工具引用缺少任务和版本绑定，完成与验收保持待核对', () => {
   const r = report(); const parsed = parseBriefing(JSON.stringify(r), [eventEvidence(event('tool/result', 2, { message: message('tests: passed') }))!], EMPTY_ACTIVITY);
-  assert.equal(parsed.acceptance[0].state, 'passed'); assert.equal(parsed.completed[0].basis, 'tool');
+  assert.equal(parsed.acceptance[0].state, 'pending'); assert.equal(parsed.completed[0].basis, 'inferred'); assert.equal(parsed.stages[0].state,'pending');
   const empty = parseBriefing(JSON.stringify(r), [], EMPTY_ACTIVITY); assert.equal(empty.stages[0].state, 'pending');
 });
 test('无效模型 JSON 明确失败', () => {

@@ -21,7 +21,7 @@ export function parseBriefing(raw: string, evidence: Evidence[], activity: LiveA
   }
   const sources = new Map(evidence.map(e => [e.seq, e]));
   const refs = (v: unknown): number[] => [...new Set(items(v, 8).filter((n): n is number => typeof n === 'number' && Number.isSafeInteger(n) && sources.has(n)))];
-  const hasTool = (r: number[]) => r.some(seq => sources.get(seq)?.type === 'tool/result');
+  // Legacy records lack criterion, call and scope bindings. Their tool citations remain unverified.
   const status = (['idle','running','waiting','review','blocked','stopped'] as string[]).includes(String(data.status)) ? data.status as RunStatus : activity.status;
   const briefing: Briefing = {
     goal: text(data.goal, 350), headline: text(data.headline, 80), stage: text(data.stage, 80), summary: text(data.summary, 1200),
@@ -31,19 +31,19 @@ export function parseBriefing(raw: string, evidence: Evidence[], activity: LiveA
       const s = object(value); const r = refs(s.evidence);
       const state = (['done','active','pending','blocked'] as string[]).includes(String(s.state)) ? s.state as StageState : 'pending';
       return { id: text(s.id, 64) || `stage-${i+1}`, title: text(s.title, 80),
-        state: state === 'done' && r.length === 0 ? 'pending' : state,
+        state: state === 'done' ? 'pending' : state,
         reason: text(s.reason, 300), evidence: r };
     }).filter(s => s.title),
     completed: items(data.completed, 8).map(value => {
       const f = object(value); const r = refs(f.evidence);
       return { text: text(f.text, 250), evidence: r,
-        basis: hasTool(r) ? 'tool' as const : r.length ? 'reported' as const : 'inferred' as const };
+        basis: r.some(seq => sources.get(seq)?.type === 'assistant/message') ? 'reported' as const : 'inferred' as const };
     }).filter(f => f.text),
     next: items(data.next, 3).map(v => text(v, 220)).filter(Boolean),
     attention: items(data.attention, 4).map(v => text(v, 300)).filter(Boolean),
     acceptance: items(data.acceptance, 8).map(value => {
       const a = object(value); const r = refs(a.evidence);
-      const state = a.state === 'failed' ? 'failed' as const : a.state === 'passed' && hasTool(r) ? 'passed' as const : 'pending' as const;
+      const state = a.state === 'failed' ? 'failed' as const : 'pending' as const;
       return { text: text(a.text, 300), state, evidence: r };
     }).filter(a => a.text),
   };

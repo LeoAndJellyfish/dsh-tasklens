@@ -31,14 +31,14 @@ const END_LABELS: Record<string, { status: RunStatus; label: string }> = {
   interrupted: { status: 'stopped', label: '会话执行中断' },
   'max-tokens': { status: 'blocked', label: '本轮达到输出长度上限' },
 };
-export function eventEvidence(event: ObservedEvent): Evidence | null {
+export function eventEvidence(event: ObservedEvent, limit?: number): Evidence | null {
   const d = records(event.data);
   let text = '';
   switch (event.type) {
     case 'user/message': text = visibleText(d.content); break;
     case 'assistant/message': text = visibleText(records(d.message).content); break;
     case 'tool/call': text = `调用工具 ${String(d.name ?? '')}：${typeof d.arguments === 'string' ? d.arguments : ''}`; break;
-    case 'tool/result': text = `${d.error ? '工具执行错误：' : '工具返回：'}${visibleText(records(d.message).content)}`; break;
+    case 'tool/result': text = `${d.error || records(d.message).isError ? '工具执行错误：' : '工具返回：'}${visibleText(records(d.message).content)}`; break;
     case 'turn/start': text = '开始新一轮任务'; break;
     case 'turn/end': {
       const reason = records(d.reason);
@@ -52,7 +52,7 @@ export function eventEvidence(event: ObservedEvent): Evidence | null {
     default: return null;
   }
   if (!text.trim()) return null;
-  return { seq: event.seq, type: event.type, time: event.time, text: clipped(text, event.type === 'tool/result' ? 1800 : 1400) };
+  return { seq: event.seq, type: event.type, time: event.time, text: clipped(text, limit ?? (event.type === 'tool/result' ? 1800 : 1400)) };
 }
 export function projectActivity(events: readonly ObservedEvent[]): LiveActivity {
   const state: LiveActivity = { ...EMPTY_ACTIVITY, pendingTools: [] };
@@ -112,7 +112,12 @@ export function contextFor(events: readonly ObservedEvent[], throughSeq = -1, li
   }
   return { evidence: [...selected.values()].sort((a,b) => a.seq - b.seq), goal, latestRequest, changed: all.some(e => e.seq > throughSeq) };
 }
-export const PRIORITY_EVENTS = new Set(['turn/end', 'approval/asked', 'approval/decided', 'goal/change', 'todo/write', 'deliverables/presented']);
+export const PRIORITY_EVENTS = new Set(['user/message', 'turn/end', 'approval/asked', 'approval/decided', 'goal/change', 'todo/write', 'deliverables/presented']);
+export function importantResult(event: ObservedEvent): boolean {
+  if (event.type !== 'tool/result') return false;
+  const d = records(event.data), message = records(d.message);
+  return Boolean(d.error || message.isError) || /(?:Process exited with code|exit_code|tests?\s+(?:passed|failed)|# (?:pass|fail)|验收通过|测试.{0,10}(?:通过|失败))/i.test(visibleText(message.content));
+}
 /** Event-driven checks still obey the shared spacing, budget and single-flight gate. */
 export function canCall(now: number, lastStart: number, minGapSeconds: number, calls: readonly number[], cap: number): boolean {
   return now - lastStart >= minGapSeconds * 1000 && calls.filter(t => t > now - 3600000).length < cap;

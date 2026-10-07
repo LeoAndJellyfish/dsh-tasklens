@@ -19,6 +19,9 @@ export interface Preferences {
         provider: string;
         model: string;
     } | null;
+    audience: 'overview' | 'technical';
+    inputBudget: number;
+    maxTokensPerHour: number;
 }
 export declare const DEFAULTS: Preferences;
 export interface Evidence {
@@ -77,6 +80,7 @@ export interface LiveActivity {
     throughSeq: number;
 }
 export interface SessionView {
+    roadmapUnchanged?: boolean;
     sessionId: string;
     preferences: Preferences;
     paused: boolean;
@@ -89,6 +93,11 @@ export interface SessionView {
     callsThisHour: number;
     callsTotal: number;
     tokensTotal: number;
+    roadmap: import('./schema.js').Roadmap | null;
+    timeline: import('./schema.js').TimelineEntry[];
+    coverage: import('./schema.js').Coverage;
+    budget: import('./schema.js').BudgetInfo;
+    commitVersion: number;
 }
 export declare const STATUS_LABELS: Record<RunStatus, string>;
 export declare const EMPTY_ACTIVITY: LiveActivity;

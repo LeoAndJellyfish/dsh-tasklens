@@ -9,7 +9,7 @@ export interface ObservedEvent {
 }
 export declare function redact(text: string): string;
 export declare function clipped(text: string, size: number): string;
-export declare function eventEvidence(event: ObservedEvent): Evidence | null;
+export declare function eventEvidence(event: ObservedEvent, limit?: number): Evidence | null;
 export declare function projectActivity(events: readonly ObservedEvent[]): LiveActivity;
 export declare function contextFor(events: readonly ObservedEvent[], throughSeq?: number, limit?: number): {
     evidence: Evidence[];
@@ -18,5 +18,6 @@ export declare function contextFor(events: readonly ObservedEvent[], throughSeq?
     changed: boolean;
 };
 export declare const PRIORITY_EVENTS: Set<string>;
+export declare function importantResult(event: ObservedEvent): boolean;
 /** Event-driven checks still obey the shared spacing, budget and single-flight gate. */
 export declare function canCall(now: number, lastStart: number, minGapSeconds: number, calls: readonly number[], cap: number): boolean;

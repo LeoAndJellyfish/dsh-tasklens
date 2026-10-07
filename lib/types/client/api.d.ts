@@ -1,5 +1,6 @@
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
 import { type ModelRoute, type Preferences, type SessionView } from '../shared.js';
+import type { Roadmap, TimelineEntry, SourceRef, PublicSource } from '../schema.js';
 export interface ClientState {
     view: SessionView | null;
     error: string | null;
@@ -19,6 +20,17 @@ export declare class TaskLensClient {
     pull(id: string): Promise<void>;
     refresh(id: string): Promise<void>;
     pause(id: string, paused: boolean): Promise<void>;
+    backfill(id: string, paused: boolean): Promise<void>;
+    history(id: string, entryId: string): Promise<{
+        roadmap: Roadmap;
+        entry: TimelineEntry;
+    }>;
+    sources(id: string, refs: SourceRef[]): Promise<Array<{
+        source: PublicSource | null;
+        ref: SourceRef;
+        validity: 'current' | 'revised' | 'missing';
+    }>>;
+    annotate(id: string, annotation: unknown): Promise<void>;
     models(): Promise<ModelRoute[]>;
     preferences(preferences: Preferences): Promise<void>;
     dispose(): void;
