@@ -6,7 +6,7 @@ export function roadmapPrompt(preferences: Preferences): string {
 状态：pending待推进、active进行中、waiting等待明确对象、blocked持续问题阻止继续、review报告完成但验收待补、done当前范围必需验收均通过、paused暂缓、abandoned明确撤回、superseded已有替代方案。工具启动不算完成；turn/end completed是回复结束。一次错误或自动重试保留在尝试中，避免自动升级成持续受阻。没有新增行动也没有已知原因时说明具体缺口。
 用户要求的撤回与替换需要用户明确来源。助手报告完成与赞扬不算验收。未注册的自然语言工具映射属于模型判断。验收项分别记录当前范围与结果；旧版本成功保留历史。新范围使用 update_node 的 newScope:true 和用户来源；旧验收不沿用于新版本。父阶段由子项派生。
 资料含完整目标约束、精简目录、此次载入的节点、相关事实、分段记忆及本批公开来源。仅修改 nodes 中载入的节点；目录用于匹配和请求补充。sources 的 id、hash、role、round 来自宿主。每项变更必须引用 sources 原文或已载入目标、节点、事实中的 sources 连续摘录。旧摘录只允许引用已展示的文字；需要完整原文时返回 needsContext。过长消息分片读取，未读片段仍待分析。protectedComplete:false时，完成、范围撤回及版本变更保持待判定。遇到匹配歧义，返回 needsContext，避免新建重复节点。
-每次最多80项操作、30个新任务、40项候选事实；多数调用只需少量变更。操作格式：
+采用紧凑增量：本次最多20项操作、3个阶段、6个具体任务、4项候选事实。首次优先建立主要交付与关键前置，后续分批补充任务；完整用户要求仍按来源保留。禁止同批重复列出相同对象，使用第一次的new-标识；同名阶段与子任务使用不同标识。reason通常不超过50字，每项验收采用简短名称，每条来源引用仅摘录支撑该项判断的连续原文，通常不超过120字，不要重复整段消息。先完整输出graphPatch，再输出事实和摘要，禁止逐工具拆成大量节点。操作格式：
 operations中的每一项是带type字段的对象，例如{"type":"add_goal","id":"new-g","title":"交付工具","requirements":[],"constraints":[],"sources":[{"id":"s-1-0","quote":"原文"}]}。所有格式如下：
 {type:"add_goal",id:"new-g",title,requirements:[文字],constraints:[{text,sources}],sources}
 {type:"update_goal",goalId,expectedRevision,title?,active?,requirements?,constraints?,sources}

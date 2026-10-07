@@ -16,6 +16,7 @@ export interface AnalysisResult {
     changed: boolean;
     rawBriefing: unknown;
     warnings: string[];
+    omittedFacts: number;
 }
 export declare function applyAnalysis(previous: Roadmap, raw: unknown, context: GraphContext, now: number): AnalysisResult;
 export declare function invalidateSources(graph: Roadmap, sources: ReadonlyMap<string, PublicSource>): boolean;

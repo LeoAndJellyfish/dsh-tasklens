@@ -20,7 +20,7 @@ function response(data: any) {
     needsContext: [], briefing: data.goals.length ? { emit: false, headline: null, summary: [], agentNext: [], userActions: [], details: [] }
       : { emit: true, headline: { text: '任务要求已记录', factIds: ['c-1'] }, summary: [], agentNext: [], userActions: [], details: [] } };
 }
-async function fixture(options: { deferred?: boolean; blocking?: boolean; fail?: boolean; long?: boolean; invalid?: boolean; automatic?: boolean } = {}) {
+async function fixture(options: { deferred?: boolean; blocking?: boolean; fail?: boolean; long?: boolean; invalid?: boolean; automatic?: boolean; invalidFact?: boolean; truncated?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'tasklens-test-')); let now = 100000, release!: () => void;
   const deferred = new Promise<void>(r => { release = r; });
   const initial = (task: string) => [ev('request/header', 0, { header: { config: { provider: 'configured', model: 'test-model' } } }), user(1, task), ev('turn/start', 2, {})];
@@ -35,7 +35,12 @@ async function fixture(options: { deferred?: boolean; blocking?: boolean; fail?:
       if (options.fail) { yield { type: 'finish', reason: { kind: 'error', failure: { message: '测试错误' } } }; return; }
       const data = JSON.parse((request.messages[0].content[0] as { text: string }).text);
       const raw = response(data); if (options.invalid) raw.graphPatch.baseGraphVersion = -10;
-      yield { type: 'text-delta', text: JSON.stringify(raw) }; yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 50 } }; yield { type: 'finish', reason: { kind: 'stop' } };
+      if (options.invalidFact && raw.factCandidates.length) {
+        const fact = { ...raw.factCandidates[0], id: 'c-invalid', claim: '27 项检查已经通过。' };
+        raw.factCandidates.push(fact); raw.briefing.headline = { text: fact.claim, factIds: [fact.id] };
+      }
+      const output = options.truncated ? JSON.stringify({ graphPatch: raw.graphPatch }).slice(0, -1) + ',"factCandidates":[{"id":"c-unfinished' : JSON.stringify(raw);
+      yield { type: 'text-delta', text: output }; yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 50 } }; yield { type: 'finish', reason: { kind: options.truncated ? 'max-tokens' : 'stop' } };
     },
   };
   const services = { llm, query, directory: dir, now: () => now } as unknown as RuntimeServices;
@@ -128,3 +133,26 @@ test('主动开启仅作用于当前对话，重启后的事件读取原开启�
   f.advance(21000); await restart.tick(); const view = await settled(restart);
   assert.equal(f.requests.length, 2); assert.equal(view.paused, false); assert.equal((await restart.view('c')).paused, true);
 } finally { await restart?.dispose(); await f.cleanup(); } });
+
+test('长记录首批含无依据数字时仍生成路线图，保持暂停且不花费修复调用', async () => {
+  const f = await fixture({ invalidFact: true, long: true });
+  try {
+    await f.runtime.requestRefresh('a'); const view = await settled(f.runtime);
+    assert.equal(view.error, null); assert.equal(view.paused, true); assert.equal(view.callsTotal, 1);
+    assert.equal(view.roadmap!.nodes.length, 1); assert(view.coverage.analyzedParts > 0);
+    const briefing = view.roadmap!.briefing!;
+    assert(briefing.fallback); assert(![briefing.headline?.text, ...briefing.summary.map(u => u.text)].join('').includes('27'));
+    assert(view.notice?.includes('依据')); f.advance(7200000); await f.runtime.tick(); await delay(20);
+    assert.equal(f.requests.length, 1); assert.equal((await f.runtime.view('a')).nextAutomaticAt, null);
+  } finally { await f.cleanup(); }
+});
+
+test('输出截断仅保留完整且有来源的任务更新，整批覆盖保持待分析且无额外调用', async () => {
+  const f = await fixture({ truncated: true });
+  try {
+    await f.runtime.requestRefresh('a'); const view = await settled(f.runtime);
+    assert.equal(view.error, null); assert.equal(view.roadmap!.nodes.length, 1); assert.equal(view.timeline.length, 1);
+    assert.equal(view.coverage.analyzedParts, 0); assert(view.notice?.includes('输出尚未结束')); assert.equal(view.paused, true);
+    f.advance(7200000); await f.runtime.tick(); await delay(20); assert.equal(f.requests.length, 1);
+  } finally { await f.cleanup(); }
+});

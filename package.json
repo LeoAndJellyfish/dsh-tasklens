@@ -1,6 +1,6 @@
 {
   "name": "dsh-tasklens",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TaskLens 任务透镜：在 DSH 原生右侧栏按阶段解释长程任务进展、依据与验收事项。",
   "type": "module",
   "license": "MIT",

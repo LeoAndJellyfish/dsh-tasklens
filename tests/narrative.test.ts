@@ -5,6 +5,7 @@ import { emptyRoadmap, type Fact } from '../src/schema.js';
 import { DEFAULTS } from '../src/shared.js';
 import { validateBriefing, fallbackBriefing, styleProblems } from '../src/narrative.js';
 import { basic } from './helpers.js';
+import { missingNumbers } from '../src/grounding.js';
 
 const cases = JSON.parse(await readFile(new URL('../docs/plans/briefing-language-cases.json', import.meta.url), 'utf8')).cases as any[];
 const normalize = (reference: any) => ({ emit: reference.emit, headline: reference.headline ? { text: reference.headline.text, factIds: reference.headline.fact_ids } : null,
@@ -42,4 +43,15 @@ test('概况保留结果标题，完整命令与退出码进入详情', () => { 
   claim: '12 项路线图检查通过，npm test --workspace tasklens 退出码为 0。', basis: 'verified', actor: 'system', scope: '路线图检查', sources: [], valid: true, time: 1, action: null };
   const result = validateBriefing({ emit: true, headline: { text: '12 项路线图检查通过', factIds: ['f'] }, summary: [{ text: fact.claim, factIds: ['f'] }], agentNext: [], userActions: [], details: [] }, f.graph, [fact], new Set(), DEFAULTS, true);
   assert.equal(result.headline!.text, '12 项路线图检查通过'); assert.equal(result.summary.length, 0); assert(result.details.some(u => u.text === fact.claim));
+});
+
+test('数字依据按完整数值匹配，支持千位分隔和全角数字', () => {
+  assert.deepEqual(missingNumbers('2 项通过，版本 0.3', ['12 项通过，版本 0.30']), ['2', '0.3']);
+  assert.deepEqual(missingNumbers('1234 项检查，１２ 项通过', ['1,234 项检查，12 项通过']), []);
+});
+
+test('全部摘要事实被筛除时，已有任务图仍提供明确的更新时间标题', () => {
+  const f = basic(), briefing = fallbackBriefing(f.graph, [], DEFAULTS);
+  assert.equal(briefing.headline?.text, '任务路线已更新'); assert.equal(briefing.summary.length, 0);
+  assert.equal(briefing.fallback, true);
 });

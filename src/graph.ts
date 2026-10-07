@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { checkedRefs, refsCurrent } from './sources.js';
+import { missingNumbers } from './grounding.js';
 import { TASK_LABELS, type Roadmap, type TaskNode, type PublicSource, type SourceRef, type Fact, type FactBasis, type Annotation, type Criterion } from './schema.js';
 
 export const object = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
@@ -40,7 +41,7 @@ export interface GraphContext {
   quotedOnly?: ReadonlyMap<string, string[]>;
   protectedComplete: boolean; pendingUserIds: Set<string>; sourceRevision: string;
 }
-export interface AnalysisResult { graph: Roadmap; facts: Fact[]; changed: boolean; rawBriefing: unknown; warnings: string[] }
+export interface AnalysisResult { graph: Roadmap; facts: Fact[]; changed: boolean; rawBriefing: unknown; warnings: string[]; omittedFacts: number }
 function acyclic(nodes: TaskNode[], edges: Array<{ from: string; to: string }>): void {
   const ids = new Set(nodes.map(n => n.id)); const out = new Map<string, string[]>();
   for (const e of edges) {
@@ -114,14 +115,32 @@ export function applyAnalysis(previous: Roadmap, raw: unknown, context: GraphCon
     } else if (kind === 'add_node') {
       const temp = textValue(op.id, 100); if (!temp.startsWith('new-') || aliases.has(temp)) throw new Error('新任务需要独立临时标识。');
       const goalId = idOf(op.goalId); if (!graph.goals.some(g => g.id === goalId)) throw new Error('任务目标不存在。');
-      const existing = graph.nodes.find(n => n.goalId === goalId && (n.title === op.title || n.aliases.includes(String(op.title))));
-      if (existing) throw new Error(`相同目标已有此任务，请沿用节点标识 ${existing.id}；原节点可通过 needsContext 请求。`);
       const parentId = op.parentId ? nodeOf(op.parentId).id : null;
       if (parentId && graph.nodes.find(n => n.id === parentId)?.goalId !== goalId) throw new Error('任务父级属于其他目标。');
+      const kindOfNode = op.kind === 'phase' ? 'phase' : 'task';
+      const existing = graph.nodes.find(n => n.goalId === goalId && n.kind === kindOfNode && (n.title === op.title || n.aliases.includes(String(op.title))));
+      if (existing) {
+        if (previous.nodes.some(n => n.id === existing.id)) throw new Error(`相同目标已有此任务，请沿用节点标识 ${existing.id}；原节点可通过 needsContext 请求。`);
+        if (existing.parentId !== parentId) throw new Error('同批重复任务的所属阶段冲突，请分别确认任务对象。');
+        const status = String(op.status ?? 'pending'); if (!(status in TASK_LABELS)) throw new Error('任务状态无效。');
+        if (['abandoned', 'superseded'].includes(status) && existing.authority !== 'proposed' && !scopePermission(refs, context.sources, existing)) throw new Error('范围撤回缺少用户明确来源。');
+        const criteria = criteriaOf(op.criteria, refs, context.sources);
+        for (const c of criteria) {
+          const matched = existing.criteria.find(old => old.title === c.title);
+          if (matched && JSON.stringify(matched.check) !== JSON.stringify(c.check)) throw new Error('同批重复任务的验收命令冲突。');
+          if (matched) { matched.required ||= c.required; matched.sources = unionRefs(matched.sources, c.sources); } else existing.criteria.push(c);
+        }
+        if (existing.criteria.length > 12) throw new Error('单个任务的验收项过多。');
+        existing.sources = unionRefs(existing.sources, refs); aliases.set(temp, existing.id);
+        existing.scopeStartSeq = Math.min(existing.scopeStartSeq ?? Infinity, ...refs.map(r => context.sources.get(r.id)!.seq));
+        existing.changedSeq = Math.max(existing.changedSeq, ...refs.map(r => context.sources.get(r.id)!.seq));
+        if (isUser(refs, context.sources)) existing.authority = 'user';
+        warnings.push('同批重复任务已合并来源；后续状态变化继续按任务标识核对。'); continue;
+      }
       if (parentId) { const parent = graph.nodes.find(n => n.id === parentId)!; if (parent.kind === 'task') { parent.kind = 'phase'; parent.revision++; changedNodes.add(parent.id); } }
       const status = String(op.status ?? 'pending'); if (!(status in TASK_LABELS)) throw new Error('任务状态无效。');
       const authority = isUser(refs, context.sources) ? 'user' : op.authority === 'adopted' ? 'adopted' : 'proposed';
-      const n: TaskNode = { id: `task-${randomUUID()}`, goalId, parentId, kind: op.kind === 'phase' ? 'phase' : 'task', title: textValue(op.title, 100), aliases: [],
+      const n: TaskNode = { id: `task-${randomUUID()}`, goalId, parentId, kind: kindOfNode, title: textValue(op.title, 100), aliases: [],
         order: graph.nodes.length, revision: 1, scopeRevision: 1, scopeStartSeq: Math.min(...refs.map(r => context.sources.get(r.id)!.seq)), authority, status: status === 'done' ? 'review' : status as TaskNode['status'],
         reason: textValue(op.reason ?? '', 500, false), criteria: criteriaOf(op.criteria, refs, context.sources), attempts: [], verifications: [], sources: refs,
         changedAt: now, changedSeq: Math.max(...refs.map(r => context.sources.get(r.id)!.seq)), replaces: null, valid: true, locks: {} };
@@ -199,8 +218,12 @@ export function applyAnalysis(previous: Roadmap, raw: unknown, context: GraphCon
     if (phase.status !== previous.nodes.find(n => n.id === phase.id)?.status && phase.revision === previous.nodes.find(n => n.id === phase.id)?.revision) { phase.revision++; phase.changedAt = now; changedNodes.add(phase.id); }
   }
   const facts: Fact[] = [];
-  if (list(input.factCandidates).length > 40) throw new Error('候选事实过多。');
-  for (const item of list(input.factCandidates)) {
+  const candidates = list(input.factCandidates); let omittedFacts = Math.max(0, candidates.length - 40);
+  if (omittedFacts) warnings.push('超过本批上限的摘要事实已暂缓。');
+  for (const item of candidates.slice(0, 40)) {
+    // Prose facts are independent of the validated graph transaction. Reject the
+    // affected statement without discarding task updates or spending a repair call.
+    try {
     const f = object(item); const id = textValue(f.id, 100); if (!id.startsWith('c-') || facts.some(v => v.id === id)) throw new Error('候选事实标识无效。');
     const refs = checkedRefs(f.sources, context.sources, context.quotedOnly); const evidence = refs.map(r => context.sources.get(r.id)!);
     const nodeIsGoal = f.nodeId && graph.goals.some(g => g.id === idOf(f.nodeId));
@@ -210,8 +233,8 @@ export function applyAnalysis(previous: Roadmap, raw: unknown, context: GraphCon
     const node = f.nodeId && !nodeIsGoal ? nodeOf(f.nodeId) : null; const claim = textValue(f.claim, 300);
     if (node && goal && node.goalId !== goal.id) throw new Error('事实的任务与目标不一致。');
     if (node && f.scopeRevision != null && f.scopeRevision !== node.scopeRevision) throw new Error('事实属于其他需求版本。');
-    const digits = claim.match(/\d+(?:\.\d+)?/g) ?? [];
-    if (digits.some(d => !refs.some(r => r.quote.includes(d)))) throw new Error('事实中的数字缺少来源。');
+    const scope = textValue(f.scope ?? '', 240, false);
+    if (missingNumbers(claim + '\n' + scope, refs.map(r => r.quote)).length) throw new Error('事实中的数字缺少来源。');
     const requested = f.action === 'user' && refs.some(r => context.pendingUserIds.has(r.id));
     if (f.action === 'user' && !requested && !evidence.every(s => s.role === 'user')) throw new Error('用户待办缺少尚待处理的请求。');
     let basis: FactBasis = requested ? 'requested' : evidence.some(s => s.role === 'assistant') ? (f.basis === 'planned' ? 'planned' : 'reported')
@@ -230,8 +253,11 @@ export function applyAnalysis(previous: Roadmap, raw: unknown, context: GraphCon
     const existing = graph.facts.find(old => old.valid && old.nodeId === (node?.id ?? null) && old.goalId === (node?.goalId ?? goal?.id ?? null) && old.claim === claim && old.basis === basis && old.sources.map(r => r.id).join() === refs.map(r => r.id).join());
     const fact: Fact = { id, nodeId: node?.id ?? null, goalId: node?.goalId ?? goal?.id ?? null, scopeRevision: node?.scopeRevision ?? goal?.revision ?? 1,
       claim, basis, actor: requested || evidence.every(s => s.role === 'user') ? 'user' : evidence.every(s => s.role === 'assistant') || basis === 'planned' ? 'agent' : 'system',
-      scope: textValue(f.scope ?? '', 240, false), sources: refs, valid: true, time: now, action: f.action === 'agent' && basis === 'planned' ? 'agent' : requested ? 'user' : null };
+      scope, sources: refs, valid: true, time: now, action: f.action === 'agent' && basis === 'planned' ? 'agent' : requested ? 'user' : null };
     facts.push(fact); if (!existing) graph.facts.push({ ...fact, id: `fact-${randomUUID()}` });
+    } catch (error) {
+      omittedFacts++; warnings.push(`摘要事实已暂缓：${error instanceof Error ? error.message : '格式无效。'}`);
+    }
   }
   const meaningful = (value: unknown) => JSON.stringify(value, (key, item) => ['revision', 'changedAt', 'changedSeq', 'time'].includes(key) ? undefined : item);
   const changed = meaningful({ goals: previous.goals, nodes: previous.nodes, edges: previous.edges, facts: previous.facts, unresolved: previous.unresolved })
@@ -242,7 +268,7 @@ export function applyAnalysis(previous: Roadmap, raw: unknown, context: GraphCon
   for (const s of context.batch) graph.analyzed[s.id] = s.hash;
   if (context.batch.length) graph.episodes.push({ id: randomUUID(), fromSeq: context.batch[0].seq, toSeq: context.batch.at(-1)!.seq,
     nodeIds: [...changedNodes], factIds: graph.facts.filter(f => f.time === now).map(f => f.id), sources: context.batch.map(s => s.id) });
-  return { graph, facts, changed, rawBriefing: input.briefing, warnings };
+  return { graph, facts, changed, rawBriefing: input.briefing, warnings, omittedFacts };
 }
 export function invalidateSources(graph: Roadmap, sources: ReadonlyMap<string, PublicSource>): boolean {
   let changed = false;

@@ -9,6 +9,7 @@ import { publicSources, sourceRevision, hashOf, pendingUserSourceIds } from './s
 import { buildContext, estimateTokens, type WorkContext } from './context.js';
 import { applyAnalysis, applyAnnotation, invalidateSources, object, textValue } from './graph.js';
 import { fallbackBriefing, validateBriefing, stableBriefing } from './narrative.js';
+import { completeGraphPrefix } from './partial.js';
 import { RoadmapStore, atomicJson, type SavedSession } from './storage.js';
 import { emptyRoadmap, type PublicSource, type Roadmap, type TimelineEntry, type Coverage, type Annotation, type SourceRef } from './schema.js';
 import { preferencesOf, type Preferences, type SessionView, type ModelRoute, type Checkpoint } from './shared.js';
@@ -252,7 +253,7 @@ export class TaskLensRuntime {
     }
     if (JSON.stringify(next) !== JSON.stringify(saved)) await s.store.commit(next, saved.commitVersion, 'prepare-history');
   }
-  private async invoke(s: SessionState, context: WorkContext, route: { provider: string; model: string }, signal: AbortSignal, reasoningEffort?: GenerateOptions['reasoningEffort']): Promise<unknown> {
+  private async invoke(s: SessionState, context: WorkContext, route: { provider: string; model: string }, signal: AbortSignal, reasoningEffort?: GenerateOptions['reasoningEffort']): Promise<{ response: unknown; complete: boolean } | null> {
     const reserve = context.estimate + OUTPUT_LIMIT;
     this.usage = this.usage.filter(t => t.time > this.now() - 3600000);
     if (this.usage.length >= this.preferences.maxCallsPerHour || this.usage.reduce((n, u) => n + u.tokens, 0) + reserve > this.preferences.maxTokensPerHour) {
@@ -262,7 +263,7 @@ export class TaskLensRuntime {
     const usage: Usage = { id: randomUUID(), sessionId: s.id, time: this.now(), tokens: reserve, estimated: true }; this.usage.push(usage);
     s.lastStart = this.now(); const next = structuredClone(s.store.state); next.callsTotal++;
     await this.write('usage', join(this.services.directory, 'usage.json'), this.usage); await s.store.commit(next, next.commitVersion, 'call-reserved');
-    let output = ''; let terminal = false; let tokens = 0;
+    let output = ''; let terminal = false; let tokens = 0; let truncated = false;
     try {
       for await (const chunk of this.services.llm.stream({ provider: route.provider, model: route.model, system: context.system,
         messages: [{ role: 'user', content: [{ type: 'text', text: context.request }] }], maxTokens: OUTPUT_LIMIT, reasoningEffort, signal })) {
@@ -272,10 +273,15 @@ export class TaskLensRuntime {
         if (chunk.type === 'finish') { terminal = true;
           if (chunk.reason.kind === 'error') throw new Error(clipped(chunk.reason.failure.message, 300));
           if (chunk.reason.kind === 'aborted') throw new Error('解释已暂停或超时。');
-          if (chunk.reason.kind === 'max-tokens') throw new Error('解释输出未完成，本批公开记录保留在队列中。'); }
+          if (chunk.reason.kind === 'max-tokens') truncated = true; }
       }
       if (!terminal || !output.trim()) throw new Error('解释模型未返回完整内容。');
-      return JSON.parse(output.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
+      if (truncated) {
+        const response = completeGraphPrefix(output);
+        if (!response) throw new Error('解释输出未完成，本批公开记录保留在队列中。');
+        return { response, complete: false };
+      }
+      return { response: JSON.parse(output.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')), complete: true };
     } finally {
       if (tokens > 0) { usage.tokens = tokens; usage.estimated = false; }
       await this.write('usage', join(this.services.directory, 'usage.json'), this.usage);
@@ -284,7 +290,7 @@ export class TaskLensRuntime {
   }
   private async run(id: string, manual: boolean): Promise<void> {
     let s = this.state(id); if (s.busy || this.active >= 2 || this.disposed) { if (!s.busy) this.schedule(s, 5000, '等待解释资源'); return; }
-    s.busy = true; this.active++; let timer: ReturnType<typeof setTimeout> | undefined; let context: WorkContext | undefined; let branch: 'live' | 'rebuild' = 'live';
+    s.busy = true; this.active++; let timer: ReturnType<typeof setTimeout> | undefined; let context: WorkContext | undefined; let branch: 'live' | 'rebuild' = 'live'; let rejectedRaw: unknown;
     try {
       s = await this.hydrate(id); await this.refreshEvents(s);
       if (this.disposed || !manual && (!this.preferences.enabled || s.store.state.paused)) return;
@@ -322,7 +328,9 @@ export class TaskLensRuntime {
       context.request = JSON.stringify(request); context.estimate = estimateTokens(context.system) + estimateTokens(context.request) + 200;
       if (context.estimate > context.limit) throw new Error('修复上下文超出输入预算。');
       s.inputEstimate = context.estimate; s.inputLimit = context.limit; s.protectedOmitted = context.protectedOmitted;
-      const raw = await this.invoke(s, context, route, controller.signal, reasoningEffort); if (raw === null || controller.signal.aborted || this.disposed) return;
+      const generated = await this.invoke(s, context, route, controller.signal, reasoningEffort); if (generated === null || controller.signal.aborted || this.disposed) return;
+      const { response: raw, complete } = generated;
+      rejectedRaw = raw;
       const afterCall = s.store.state; const expectedCommit = afterCall.commitVersion;
       await this.refreshEvents(s);
       const current = new Map(s.sources.map(v => [v.id, v]));
@@ -331,7 +339,7 @@ export class TaskLensRuntime {
         || (branch === 'live' ? afterCall.live.version : afterCall.rebuild?.version) !== graph.version) {
         s.notice = '分析期间需求或任务版本发生变化，过期响应已丢弃，队列将重新分析。'; this.schedule(s, 3000, '需求复核'); return;
       }
-      const result = applyAnalysis(graph, raw, context, this.now());
+      const result = applyAnalysis(graph, raw, complete ? context : { ...context, batch: [] }, this.now());
       try { result.graph.briefing = stableBriefing(validateBriefing(result.rawBriefing, result.graph, result.facts, context.factsLoaded, this.preferences, result.changed), result.graph, result.facts); }
       catch { result.graph.briefing = result.changed ? stableBriefing(fallbackBriefing(result.graph, result.facts, this.preferences), result.graph, result.facts) : graph.briefing; }
       const next = structuredClone(afterCall); next[branch] = result.graph; next.pendingWork = null;
@@ -355,12 +363,16 @@ export class TaskLensRuntime {
       }
       await s.store.cacheSources([...context.sources.values()]);
       await s.store.commit(next, expectedCommit, `${result.graph.generation}:${result.graph.version}:${context.sourceRevision}`);
+      if (result.omittedFacts) s.notice = '路线图已更新；部分摘要的依据尚待核对，暂未展示。';
+      if (!complete) s.notice = '本批已核对的任务已保存，模型输出尚未结束；剩余记录保留待继续分析。';
       s.failures = 0;
       if (this.pending(s).length || s.store.state.pendingWork || s.store.state.rebuild && !s.store.state.backfillPaused) this.schedule(s, this.preferences.minGapSeconds * 1000, '继续分析');
       else if (projectActivity(s.events).status === 'running') this.schedule(s, this.preferences.intervalSeconds * 1000, '定时更新');
     } catch (e) {
       if (['tasklens-pause', 'tasklens-disabled', 'tasklens-disposed'].includes(String(s.controller?.signal.reason))) { s.error = null; s.due = null; return; }
       s.error = clipped(e instanceof Error ? e.message : String(e), 400); s.failures++;
+      if (rejectedRaw && context) await s.store.rejectedAnalysis({ time: this.now(), error: s.error, response: rejectedRaw,
+        sources: [...context.sources.values()], frame: { sourceRevision: context.sourceRevision, throughSeq: context.throughSeq, round: context.round } }).catch(() => undefined);
       if (context && s.failures === 1) {
         const next = structuredClone(s.store.state); const graph = branch === 'rebuild' ? next.rebuild : next.live;
         const nodeIds = (s.error.match(/task-[0-9a-f-]+/g) ?? []).filter(id => graph?.nodes.some(n => n.id === id));

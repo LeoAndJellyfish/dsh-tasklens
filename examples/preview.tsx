@@ -55,7 +55,8 @@ const api = new TaskLensClient({ call: async (_channel: string, method: string, 
   if (method === 'history') { const entry = entries.find(e => e.id === input.entryId)!; value = { entry, roadmap: fixture(entry.round) }; }
   else if (method === 'sources') value = input.refs.map((ref: SourceRef) => ({ ref, validity: 'current', source: { id: ref.id, seq: Number(ref.id.split('-')[1]), part: 0, parts: 1, round: 11, time: now, type: 'user/message', role: 'user', hash: ref.hash, text: ref.quote } }));
   else if (method === 'models') value = [{ provider: 'example', providerName: '示例供应商', model: 'example-model', name: '示例模型' }];
-  else { if (method === 'pause') view = { ...view, paused: input.paused }; if (method === 'backfill') view = { ...view, coverage: { ...view.coverage, backfillPaused: input.paused } }; if (method === 'preferences') view = { ...view, preferences: input.preferences }; value = view; }
+  else { if (method === 'refresh' && !view.roadmap) view = { ...structuredClone(initialView), sessionId: input.sessionId, error: null, paused: view.paused, notice: '合成验收：本批路线图已生成，自动解释保持暂停。' };
+    if (method === 'pause') view = { ...view, paused: input.paused }; if (method === 'backfill') view = { ...view, coverage: { ...view.coverage, backfillPaused: input.paused } }; if (method === 'preferences') view = { ...view, preferences: input.preferences }; value = view; }
   return { ok: true, value };
 } } as any);
 function App() {
@@ -64,6 +65,6 @@ function App() {
     if (fresh) view = { ...view, activity: { ...EMPTY_ACTIVITY }, roadmap: null, timeline: [], commitVersion: 0, callsThisHour: 0, callsTotal: 0, tokensTotal: 0,
       coverage: { ...view.coverage, analyzedParts: 0, totalParts: 0, completeRounds: [], pendingRounds: [], rebuilding: false } };
     setBound(id); void api.pull(id); };
-  return <div className="example-page" data-theme={dark ? 'dark' : 'light'}><style>{CSS + '.example-toolbar{color:#192538}'}</style><div className="example-toolbar"><strong>TaskLens · 界面验收</strong><span>合成记录 · 使用正式版组件</span>{[736, 480, 320].map(w => <button key={w} aria-pressed={width === w} onClick={() => setWidth(w)}>{w}px</button>)}<button onClick={() => setDark(!dark)}>{dark ? '浅色' : '深色'}</button><button onClick={() => { view = { ...view, roadmap: fixture(15, 500) }; void api.pull(bound); }}>500 项</button><button onClick={() => reset(true)}>新对话</button><button onClick={() => reset(false)}>示例路线</button></div><main style={{ width }}><Panel api={api} boundSessionId={bound}/></main></div>;
+  return <div className="example-page" data-theme={dark ? 'dark' : 'light'}><style>{CSS + '.example-toolbar{color:#192538}'}</style><div className="example-toolbar"><strong>TaskLens · 界面验收</strong><span>合成记录 · 使用正式版组件</span>{[736, 480, 320].map(w => <button key={w} aria-pressed={width === w} onClick={() => setWidth(w)}>{w}px</button>)}<button onClick={() => setDark(!dark)}>{dark ? '浅色' : '深色'}</button><button onClick={() => { view = { ...view, roadmap: fixture(15, 500) }; void api.pull(bound); }}>500 项</button><button onClick={() => reset(true)}>新对话</button><button onClick={() => { view = { ...view, roadmap: null, timeline: [], error: '事实中的数字缺少来源。', paused: true }; void api.pull(bound); }}>校验失败</button><button onClick={() => reset(false)}>示例路线</button></div><main style={{ width }}><Panel api={api} boundSessionId={bound}/></main></div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

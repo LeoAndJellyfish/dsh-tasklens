@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties }
 import { TASK_LABELS, type Roadmap, type TaskNode } from '../schema.js';
 import { route, rounded, type Point, type Rect, type Segment } from './routing.js';
 import { Badge, StatusIcon } from './common.js';
+import { dependencyRows } from './layout.js';
 interface Edge { id: string; from: string; to: string; blocked: boolean }
 type Side = 'left' | 'right' | 'top' | 'bottom';
 interface Port { edge: string; role: 'source' | 'target'; side: Side; position: number }
@@ -34,7 +35,8 @@ export function Graph({ graph, selected, onSelect }: { graph: Roadmap; selected:
       ordered.push(...waiting.splice(index < 0 ? 0 : index, 1)); }
     const groupIds = [...new Set(ordered.map(n => aggregated ? n.goalId : n.parentId ?? n.goalId))];
     const groups = groupIds.map(id => ({ id, title: graph.nodes.find(n => n.id === id)?.title ?? graph.goals.find(g => g.id === id)?.title ?? '任务', nodes: ordered.filter(n => (aggregated ? n.goalId : n.parentId ?? n.goalId) === id) }));
-    return { nodes: ordered, groups, edges, aggregated, total: tasks.length };
+    const rows = dependencyRows(ordered, groups, edges);
+    return { nodes: ordered, groups, edges, rows, rowCount: Math.max(0, ...rows.values()) + 1, aggregated, total: tasks.length };
   }, [graph, selected, local]);
   const ports = useMemo(() => {
     const map = new Map(data.nodes.map(n => [n.id, [] as Port[]]));
@@ -76,17 +78,18 @@ export function Graph({ graph, selected, onSelect }: { graph: Roadmap; selected:
   return <div className="tl-graph-view">
     <div className="tl-graph-caption"><span>{data.aggregated ? `阶段路线 · ${data.nodes.length} 个入口 / ${data.total} 项任务` : data.total > 24 ? `相关任务 · ${data.nodes.length} / ${data.total}` : '前置 → 后续'}</span>
       {data.total > 24 && <button className="tl-text-button" onClick={() => setLocal(!local)}>{local ? '查看阶段路线' : '查看选中关联'}</button>}</div>
-    <div ref={root} className="tl-graph" data-orientation={vertical ? 'vertical' : 'horizontal'} data-route-failures={geometry.failed.join(',')} style={{ '--tl-columns': data.groups.length } as CSSProperties}>
+    <div ref={root} className="tl-graph" data-orientation={vertical ? 'vertical' : 'horizontal'} data-route-failures={geometry.failed.join(',')} style={{ '--tl-columns': data.groups.length, '--tl-rows': data.rowCount } as CSSProperties}>
       <svg className="tl-edges" viewBox={`0 0 ${geometry.width} ${geometry.height}`} aria-hidden="true">
         <defs>{['normal', 'selected', 'blocked'].map(tone => <marker key={tone} id={`${marker}-${tone}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path d="M1 1L7 4L1 7" fill="none" stroke="currentColor" className={`tl-edge-${tone}`} strokeWidth="1.3"/></marker>)}</defs>
         {geometry.paths.map(p => <path key={p.id} d={p.d} fill="none" className={`tl-edge-${p.tone}`} stroke="currentColor" strokeWidth={p.tone === 'normal' ? 1.4 : 1.7} markerEnd={`url(#${marker}-${p.tone})`} data-from={p.from} data-to={p.to} data-points={JSON.stringify(p.points)}/>)}
       </svg>
-      <div className="tl-graph-groups">{data.groups.map(group => <div className="tl-graph-group" key={group.id}><strong className="tl-graph-heading">{group.title}</strong>{group.nodes.map(n => <div key={n.id} className="tl-graph-node" data-graph-card={n.id}>
+      <div className="tl-graph-groups">{data.groups.map(group => <div className="tl-graph-group" key={group.id}><strong className="tl-graph-heading">{group.title}</strong>{group.nodes.map(n => <div key={n.id} className="tl-graph-node" data-graph-card={n.id} style={{ gridRow: data.rows.get(n.id)! + 2 }}>
         <button type="button" className="tl-card" data-status={n.status} aria-label={`${n.title}，${TASK_LABELS[n.status]}`} aria-pressed={selected === n.id} onClick={() => onSelect(n.id)}><span><StatusIcon status={n.status}/><strong>{n.title}</strong></span><Badge status={n.status}/></button>
         {ports.get(n.id)?.map(p => <span key={p.edge + p.role} className="tl-port" data-side={p.side} data-port-edge={p.edge} data-port-role={p.role} style={{ '--tl-port-position': `${p.position}%` } as CSSProperties} aria-hidden="true"/>)}
       </div>)}</div>)}</div>
     </div>
     {geometry.failed.length > 0 && <p className="tl-route-note">{geometry.failed.length} 条关系的走线待调整；任务详情保留全部前置关系。</p>}
     {!data.nodes.length && <p className="tl-muted">当前范围尚无任务。</p>}
+    {data.edges.length > 0 && <div className="tl-graph-legend"><span><i className="selected"/>选中任务关联</span><span><i className="blocked"/>未解除的阻碍</span></div>}
   </div>;
 }

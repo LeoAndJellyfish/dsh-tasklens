@@ -170,15 +170,62 @@ test('引用已载入节点的历史摘录时，仅接受已展示的连续文�
   f.graph.nodes = [f.pdf]; f.graph.edges = []; f.pdf.parentId = null; f.pdf.sources = [{ id: original.id, hash: original.hash, quote: '制作 PDF 和 HTML' }];
   f.pdf.criteria = []; f.graph.goals[0].sources = f.pdf.sources; f.graph.goals[0].constraints = []; f.graph.goals[0].requirements = [];
   for (const s of initial) f.graph.analyzed[s.id] = s.hash;
-  const c = buildContext(f.graph, [...initial, ...publicSources([assistant(2, '继续 PDF 导出。')])], { ...DEFAULTS, inputBudget: 6000 });
+  const c = buildContext(f.graph, [...initial, ...publicSources([assistant(2, '继续 PDF 导出。')])], { ...DEFAULTS, inputBudget: 8000 });
   // Force the citable excerpt path independently of discretionary raw-source admission.
   c.quotedOnly = new Map([[original.id, ['制作 PDF 和 HTML']]]); c.sources = new Map([...c.sources, [original.id, original]]);
   const raw = (quote: string) => ({ graphPatch: { baseGraphVersion: f.graph.version, sourceRevision: c.sourceRevision, operations: [] }, factCandidates: [{ id: 'c-old', nodeId: f.pdf.id, claim: '用户要求制作 PDF。', basis: 'decision', sources: [{ id: original.id, quote }] }] });
   assert.equal(applyAnalysis(f.graph, raw('制作 PDF'), c, 3).facts[0].basis, 'decision');
-  assert.throws(() => applyAnalysis(f.graph, raw('历史细节。'), c, 3), /摘录/);
+  const rejected = applyAnalysis(f.graph, raw('历史细节。'), c, 3);
+  assert.equal(rejected.facts.length, 0); assert.equal(rejected.omittedFacts, 1); assert(rejected.warnings.some(w => /摘录/.test(w)));
 });
 
 test('目标更新未列出的早期要求仍保留', () => { const f = basic(); f.graph.goals[0].requirements = ['制作 PDF', '制作 HTML']; const e = user(2, '增加离线验收要求。');
   const graph = apply(f.graph, [e], [{ type: 'update_goal', goalId: f.graph.goals[0].id, expectedRevision: 1, requirements: ['离线验收'], sources: ref(2, e.data.content[0].text) }]).graph;
   assert.deepEqual(graph.goals[0].requirements, ['制作 PDF', '制作 HTML', '离线验收']);
+});
+
+test('摘要数字缺少来源时仅筛除该陈述，已核对的任务更新继续保存', () => {
+  const f = basic(), sources = ref(0, '制作 PDF 和 HTML');
+  const output = apply(f.graph, f.events, [{ type: 'update_node', nodeId: f.pdf.id, expectedNodeRevision: 1,
+    changes: { status: 'active' }, reason: '正在制作 PDF', sources }], [
+    { id: 'c-good', nodeId: f.pdf.id, claim: '用户要求制作 PDF。', basis: 'decision', sources },
+    { id: 'c-bad', nodeId: f.pdf.id, claim: '27 项检查已经通过。', basis: 'verified', sources },
+  ]);
+  assert.equal(output.graph.nodes.find(n => n.id === f.pdf.id)!.status, 'active');
+  assert.equal(f.pdf.status, 'pending'); assert.equal(output.facts.length, 1); assert.equal(output.omittedFacts, 1);
+  assert(output.warnings.some(w => /数字/.test(w))); assert(!output.graph.facts.some(f => f.claim.includes('27')));
+});
+
+test('候选摘要格式、旧版本及无效来源互相隔离，任务操作仍采用严格事务', () => {
+  const f = basic(), sources = ref(0, '制作 PDF 和 HTML');
+  const output = apply(f.graph, f.events, [], [null, { id: 'c-old', nodeId: f.pdf.id, scopeRevision: 99, claim: '要求制作 PDF。', sources },
+    { id: 'c-missing', nodeId: f.pdf.id, claim: '要求制作 PDF。', sources: ref(999, '制作 PDF') },
+    { id: 'c-good', nodeId: f.pdf.id, claim: '要求制作 PDF。', sources }]);
+  assert.equal(output.omittedFacts, 3); assert.equal(output.facts.length, 1);
+  assert.throws(() => apply(f.graph, f.events, [{ type: 'update_node', nodeId: f.pdf.id, expectedNodeRevision: 1,
+    changes: { status: 'active' }, reason: '核对', sources: ref(999, '制作 PDF') }]), /来源/);
+});
+
+test('首版同批重复任务合并临时标识和来源，后续引用继续有效', () => {
+  const sources = ref(0, '制作 PDF，先核对文字，再核对排版。'), events = [user(0, sources[0].quote)];
+  const output = apply(emptyRoadmap('s', 'g'), events, [
+    { type: 'add_goal', id: 'new-g', title: 'PDF 交付', sources },
+    { type: 'add_node', id: 'new-a', goalId: 'new-g', title: 'PDF 导出', sources, criteria: [{ title: '文字符合要求', required: false }] },
+    { type: 'add_node', id: 'new-b', goalId: 'new-g', title: 'PDF 导出', sources, criteria: [{ title: '文字符合要求' }, { title: '排版符合要求' }] },
+    { type: 'update_node', nodeId: 'new-b', changes: { status: 'active' }, reason: '核对排版', sources },
+  ], [{ id: 'c-1', nodeId: 'new-b', claim: '用户要求制作 PDF。', sources }]);
+  assert.equal(output.graph.nodes.length, 1); assert.equal(output.graph.nodes[0].criteria.length, 2);
+  assert.equal(output.graph.nodes[0].criteria[0].required, true);
+  assert.equal(output.graph.nodes[0].status, 'active'); assert.equal(output.facts[0].nodeId, output.graph.nodes[0].id);
+  const existing = output.graph.nodes[0];
+  assert.throws(() => apply(output.graph, events, [{ type: 'add_node', id: 'new-duplicate', goalId: existing.goalId, title: existing.title, sources }]), /沿用节点标识/);
+});
+
+test('阶段与子任务同名时仍有各自身份，同批层级冲突保持拒绝', () => {
+  const sources = ref(0, '制作报告，并完成报告排版。'), events = [user(0, sources[0].quote)];
+  const ops = [{ type: 'add_goal', id: 'new-g', title: '交付报告', sources },
+    { type: 'add_node', id: 'new-p', goalId: 'new-g', title: '报告排版', kind: 'phase', sources },
+    { type: 'add_node', id: 'new-task', goalId: 'new-g', parentId: 'new-p', title: '报告排版', kind: 'task', sources }];
+  assert.equal(apply(emptyRoadmap('s', 'g'), events, ops).graph.nodes.length, 2);
+  assert.throws(() => apply(emptyRoadmap('s', 'g'), events, [...ops, { type: 'add_node', id: 'new-other', goalId: 'new-g', title: '报告排版', kind: 'task', sources }]), /阶段冲突/);
 });

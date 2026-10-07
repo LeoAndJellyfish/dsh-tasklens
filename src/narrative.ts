@@ -2,6 +2,7 @@ import { object } from './graph.js';
 import type { Fact, ProseUnit, Roadmap, WorkBriefing } from './schema.js';
 import type { Preferences } from './shared.js';
 import { STYLE_VERSION } from './protocol.js';
+import { missingNumbers } from './grounding.js';
 
 export const styleProblems = (text: string): string[] => [
   /把[^。\n]{0,80}变成/.test(text) ? '转化模板' : '',
@@ -31,7 +32,7 @@ export function fallbackBriefing(graph: Roadmap, candidates: Fact[], preferences
   const primary = units.filter(u => !technicalExpression(u.text));
   if (!primary.length && selected.length) { const fact = selected[0]; const node = graph.nodes.find(n => n.id === fact.nodeId);
     primary.push({ text: `${node?.title ?? '任务检查'}有新的结果，具体范围见详情。`, factIds: [fact.id] }); }
-  let headline = primary[0] ?? null; let summary = primary.slice(1);
+  let headline = primary[0] ?? (graph.nodes.length ? { text: '任务路线已更新', factIds: [] } : null); let summary = primary.slice(1);
   if (headline && headline.text.length > 36) { const fact = usable.find(f => f.id === headline!.factIds[0])!;
     const node = graph.nodes.find(n => n.id === fact.nodeId) ?? graph.nodes.filter(n => n.kind === 'task' && fact.claim.includes(n.title)).sort((a, b) => b.title.length - a.title.length)[0];
     const name = node?.title ?? '当前事项'; const failed = /失败|未通过/.test(fact.claim.replace(/(?:0|零)\s*(?:项|个)?\s*失败/g, ''));
@@ -56,7 +57,7 @@ export function validateBriefing(raw: unknown, graph: Roadmap, candidates: Fact[
       || !f.nodeId && f.goalId && graph.goals.find(g => g.id === f.goalId)?.revision !== f.scopeRevision)) throw new Error('说明引用了无效事实或旧需求版本。');
     const valid = supporting as Fact[]; let text = u.text.trim();
     if (styleProblems(text).length) throw new Error('说明含禁用表达。');
-    if ((text.match(/\d+(?:\.\d+)?/g) ?? []).some(d => !valid.some(f => f.claim.includes(d) || f.scope.includes(d)))) throw new Error('说明新增了来源外数字。');
+    if (missingNumbers(text, valid.flatMap(f => [f.claim, f.scope])).length) throw new Error('说明新增了来源外数字。');
     if (valid.some(f => f.basis === 'reported') && /(?:完成|通过|修复|成功|已交付|已发布)/.test(text)
       && !/(?:执行\s*AI\s*报告|助手报告|据执行\s*AI)/.test(text)) throw new Error('完成报告的身份限定缺失。');
     if (valid.some(f => f.basis === 'planned') && (/(?:已完成|已经|通过了|已发布)/.test(text)

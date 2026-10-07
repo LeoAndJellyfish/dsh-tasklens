@@ -61,6 +61,10 @@ export class RoadmapStore {
   state: SavedSession;
   notice: string | null = null;
   private lastHash = ''; private corrupt = false; private writing = Promise.resolve();
+  async rejectedAnalysis(record: unknown): Promise<void> {
+    const serialized = JSON.stringify(record);
+    if (Buffer.byteLength(serialized) <= 160000) await atomicJson(join(this.directory, 'last-rejected-analysis.json'), record);
+  }
   constructor(root: string, id: string) {
     this.directory = join(root, 'roadmaps', hashOf(id));
     this.state = { schemaVersion: 2, sessionId: id, commitVersion: 0, live: emptyRoadmap(id, 'initial'), rebuild: null, rebuildTarget: null, liveFloor: null, pendingWork: null,

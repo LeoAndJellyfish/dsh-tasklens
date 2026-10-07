@@ -34,6 +34,7 @@ export declare class RoadmapStore {
     private lastHash;
     private corrupt;
     private writing;
+    rejectedAnalysis(record: unknown): Promise<void>;
     constructor(root: string, id: string);
     private lease;
     initialize(): Promise<void>;
